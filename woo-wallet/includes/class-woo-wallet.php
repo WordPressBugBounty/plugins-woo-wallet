@@ -1,4 +1,10 @@
 <?php
+/**
+ * Main wallet calss
+ *
+ * @package StandaloneTech
+ */
+
 if ( ! defined( 'ABSPATH' ) ) {
 	exit; // Exit if accessed directly.
 }
@@ -162,8 +168,8 @@ final class WooWallet {
 			add_action( 'woocommerce_order_status_' . $status, array( $this->wallet, 'wallet_credit_purchase' ) );
 		}
 
-		add_action( 'woocommerce_checkout_order_processed', array( $this->wallet, 'wallet_partial_payment' ), 99 );
-		add_action( 'woocommerce_store_api_checkout_order_processed', array( $this->wallet, 'wallet_partial_payment' ), 99 );
+		add_action( 'woocommerce_checkout_order_processed', array( $this->wallet, 'woocommerce_order_processed' ), 99 );
+		add_action( 'woocommerce_store_api_checkout_order_processed', array( $this->wallet, 'woocommerce_order_processed' ), 99 );
 
 		foreach ( apply_filters( 'wallet_cashback_order_status', $this->settings_api->get_option( 'process_cashback_status', '_wallet_settings_credit', array( 'processing', 'completed' ) ) ) as $status ) {
 			add_action( 'woocommerce_order_status_' . $status, array( $this->wallet, 'wallet_cashback' ), 12 );
@@ -396,6 +402,7 @@ final class WooWallet {
 			$wpdb->query( $wpdb->prepare( "DELETE t.*, tm.* FROM {$wpdb->base_prefix}woo_wallet_transactions t JOIN {$wpdb->base_prefix}woo_wallet_transaction_meta tm ON t.transaction_id = tm.transaction_id WHERE t.user_id = %d", $id ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery, WordPress.DB.DirectDatabaseQuery.NoCaching
 		}
 	}
+
 	/**
 	 * Filter wallet topup orders.
 	 *
@@ -413,6 +420,7 @@ final class WooWallet {
 
 		return $query;
 	}
+
 	/**
 	 * Registers WooCommerce Blocks integration.
 	 */
@@ -430,13 +438,13 @@ final class WooWallet {
 		require_once WOO_WALLET_ABSPATH . 'includes/class-woo-wallet-partial-payment-blocks.php';
 		add_action(
 			'woocommerce_blocks_cart_block_registration',
-			function( $integration_registry ) {
+			function ( $integration_registry ) {
 				$integration_registry->register( new WOO_Wallet_Partial_Payment_Blocks() );
 			}
 		);
 		add_action(
 			'woocommerce_blocks_checkout_block_registration',
-			function( $integration_registry ) {
+			function ( $integration_registry ) {
 				$integration_registry->register( new WOO_Wallet_Partial_Payment_Blocks() );
 			}
 		);
@@ -444,7 +452,7 @@ final class WooWallet {
 		woocommerce_store_api_register_update_callback(
 			array(
 				'namespace' => 'apply-partial-payment',
-				'callback'  => function( $data ) {
+				'callback'  => function ( $data ) {
 					if ( ! is_null( wc()->session ) ) {
 						wc()->session->set( 'partial_payment_amount', $data['amount'] );
 					}
@@ -516,11 +524,10 @@ final class WooWallet {
 	/**
 	 * Display admin notice
 	 */
-	public function admin_notices() {
-		?>
+	public function admin_notices() {                   ?>
 		<div class="error">
 			<p>
-				<?php echo esc_html_e( 'TeraWallet plugin requires', 'woo-wallet' ); ?> 
+				<?php echo esc_html_e( 'TeraWallet plugin requires', 'woo-wallet' ); ?>
 				<a href="https://wordpress.org/plugins/woocommerce/">WooCommerce</a> <?php echo esc_html_e( 'plugins to be active!', 'woo-wallet' ); ?>
 			</p>
 		</div>
