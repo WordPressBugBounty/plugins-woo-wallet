@@ -76,7 +76,7 @@ if ( ! class_exists( 'Woo_Wallet_Frontend' ) ) {
 			add_filter( 'woocommerce_cart_totals_get_fees_from_cart_taxes', array( $this, 'woocommerce_cart_totals_get_fees_from_cart_taxes' ), 999, 2 );
 			add_action( 'woocommerce_thankyou', array( $this, 'restore_woocommerce_cart_items' ) );
 			add_filter( 'woo_wallet_is_enable_transfer', array( $this, 'woo_wallet_is_enable_transfer' ) );
-			add_filter( 'woo_wallet_is_enable_top_up', array( $this, 'woo_wallet_is_enable_top_up' ) );
+			add_filter( 'woo_wallet_is_enable_add', array( $this, 'woo_wallet_is_enable_top_up' ) );
 
 			add_filter( 'wp_nav_menu_objects', array( $this, 'wp_nav_menu_objects' ), 10 );
 
@@ -171,17 +171,11 @@ if ( ! class_exists( 'Woo_Wallet_Frontend' ) ) {
 		 * Register and enqueue frontend styles and scripts
 		 */
 		public function woo_wallet_styles() {
-			wp_register_style( 'woo-wallet-payment-jquery-ui', woo_wallet()->plugin_url() . '/assets/jquery/css/jquery-ui.css', false, WOO_WALLET_PLUGIN_VERSION, false );
-			wp_register_style( 'jquery-datatables-style', woo_wallet()->plugin_url() . '/assets/jquery/css/jquery.dataTables.min.css', false, WOO_WALLET_PLUGIN_VERSION, false );
-			wp_register_style( 'jquery-datatables-responsive-style', woo_wallet()->plugin_url() . '/assets/jquery/css/responsive.dataTables.min.css', false, WOO_WALLET_PLUGIN_VERSION, false );
-			wp_register_style( 'jquery-daterangepicker-style', woo_wallet()->plugin_url() . '/assets/jquery/css/daterangepicker.css', false, WOO_WALLET_PLUGIN_VERSION, false );
 			wp_register_style( 'woo-wallet-style', woo_wallet()->plugin_url() . '/build/frontend/main.css', array(), WOO_WALLET_PLUGIN_VERSION );
 			// Add RTL support.
 			wp_style_add_data( 'woo-wallet-style', 'rtl', 'replace' );
-			wp_register_script( 'jquery-datatables-script', woo_wallet()->plugin_url() . '/assets/jquery/js/jquery.dataTables.min.js', array( 'jquery' ), WOO_WALLET_PLUGIN_VERSION, true );
-			wp_register_script( 'jquery-datatables-responsive-script', woo_wallet()->plugin_url() . '/assets/jquery/js/dataTables.responsive.min.js', array( 'jquery' ), WOO_WALLET_PLUGIN_VERSION, true );
-			wp_register_script( 'jquery-daterangepicker-script', woo_wallet()->plugin_url() . '/assets/jquery/js/daterangepicker.min.js', array( 'jquery', 'moment' ), WOO_WALLET_PLUGIN_VERSION, true );
-			wp_register_script( 'wc-endpoint-wallet', woo_wallet()->plugin_url() . '/build/frontend/main.js', array( 'jquery', 'jquery-datatables-script', 'moment' ), WOO_WALLET_PLUGIN_VERSION, true );
+			$frontend_asset = include WOO_WALLET_ABSPATH . 'build/frontend/main.asset.php';
+			wp_register_script( 'wc-endpoint-wallet', woo_wallet()->plugin_url() . '/build/frontend/main.js', array_merge( $frontend_asset['dependencies'], array( 'jquery' ) ), $frontend_asset['version'], true );
 			$data_table_columns = apply_filters(
 				'woo_wallet_transactons_datatable_columns',
 				array(
@@ -284,18 +278,10 @@ if ( ! class_exists( 'Woo_Wallet_Frontend' ) ) {
 			);
 			wp_localize_script( 'wc-endpoint-wallet', 'wallet_param', $wallet_localize_param );
 			if ( is_account_page() ) {
-				wp_enqueue_style( 'woo-wallet-payment-jquery-ui' );
 				wp_enqueue_style( 'dashicons' );
 				wp_enqueue_style( 'select2' );
-				wp_enqueue_style( 'jquery-datatables-style' );
-				wp_enqueue_style( 'jquery-datatables-responsive-style' );
-				wp_enqueue_style( 'jquery-daterangepicker-style' );
 				wp_enqueue_style( 'woo-wallet-style' );
-				wp_enqueue_script( 'jquery-ui-datepicker' );
 				wp_enqueue_script( 'selectWoo' );
-				wp_enqueue_script( 'jquery-datatables-script' );
-				wp_enqueue_script( 'jquery-datatables-responsive-script' );
-				wp_enqueue_script( 'jquery-daterangepicker-script' );
 				wp_enqueue_script( 'wc-endpoint-wallet' );
 			}
 			$add_to_cart_variation = "jQuery(function ($) { $(document).on('show_variation', function (event, variation, purchasable) { if(variation.cashback_amount) { $('.on-woo-wallet-cashback').show(); $('.on-woo-wallet-cashback').html(variation.cashback_html); } else { $('.on-woo-wallet-cashback').hide(); } }) });";
@@ -440,80 +426,165 @@ if ( ! class_exists( 'Woo_Wallet_Frontend' ) ) {
 		 * @return array
 		 */
 		public function do_wallet_transfer() {
-			$response = array(
-				'is_valid' => true,
-				'message'  => '',
-			);
-			if ( isset( $_POST['woo_wallet_transfer'] ) && wp_verify_nonce( wp_unslash( $_POST['woo_wallet_transfer'] ), 'woo_wallet_transfer' ) ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
-				$whom             = isset( $_POST['woo_wallet_transfer_user_id'] ) ? absint( sanitize_text_field( wp_unslash( $_POST['woo_wallet_transfer_user_id'] ) ) ) : 0;
-				$amount           = isset( $_POST['woo_wallet_transfer_amount'] ) ? floatval( sanitize_text_field( wp_unslash( $_POST['woo_wallet_transfer_amount'] ) ) ) : 0;
-				$whom             = apply_filters( 'woo_wallet_transfer_user_id', $whom );
-				$whom             = get_userdata( $whom );
-				$current_user_obj = get_userdata( get_current_user_id() );
-				if ( get_current_user_id() === $whom->ID ) {
-					return array(
-						'is_valid' => false,
-						'message'  => sprintf( __( 'Invalid user', 'woo-wallet' ) ),
-					);
-				}
-				/* translators: user_email */
-				$credit_note = isset( $_POST['woo_wallet_transfer_note'] ) && ! empty( $_POST['woo_wallet_transfer_note'] ) ? sanitize_text_field( wp_unslash( $_POST['woo_wallet_transfer_note'] ) ) : sprintf( __( 'Wallet funds received from %s', 'woo-wallet' ), $current_user_obj->user_email );
-				/* translators: user_email */
-				$debit_note  = sprintf( __( 'Wallet funds transfer to %s', 'woo-wallet' ), $whom->user_email );
-				$credit_note = apply_filters( 'woo_wallet_transfer_credit_transaction_note', $credit_note, $whom, $amount );
-				$debit_note  = apply_filters( 'woo_wallet_transfer_debit_transaction_note', $debit_note, $whom, $amount );
-
-				$transfer_charge_type   = woo_wallet()->settings_api->get_option( 'transfer_charge_type', '_wallet_settings_general', 'percent' );
-				$transfer_charge_amount = woo_wallet()->settings_api->get_option( 'transfer_charge_amount', '_wallet_settings_general', 0 );
-				$transfer_charge        = 0;
-				if ( 'percent' === $transfer_charge_type ) {
-					$transfer_charge = ( $amount * $transfer_charge_amount ) / 100;
-				} else {
-					$transfer_charge = $transfer_charge_amount;
-				}
-				$transfer_charge = apply_filters( 'woo_wallet_transfer_charge_amount', $transfer_charge, $whom );
-				$credit_amount   = apply_filters( 'woo_wallet_transfer_credit_amount', $amount, $whom );
-				$debit_amount    = apply_filters( 'woo_wallet_transfer_debit_amount', $amount + $transfer_charge, $whom );
-				if ( woo_wallet()->settings_api->get_option( 'min_transfer_amount', '_wallet_settings_general', 0 ) ) {
-					if ( woo_wallet()->settings_api->get_option( 'min_transfer_amount', '_wallet_settings_general', 0 ) > $amount ) {
-						return array(
-							'is_valid' => false,
-							/* translators: Max transfer amount */
-							'message'  => sprintf( __( 'Minimum transfer amount is %s', 'woo-wallet' ), wc_price( woo_wallet()->settings_api->get_option( 'min_transfer_amount', '_wallet_settings_general', 0 ), woo_wallet_wc_price_args() ) ),
-						);
-					}
-				}
-				if ( ! $whom ) {
-					return array(
-						'is_valid' => false,
-						'message'  => __( 'Invalid user', 'woo-wallet' ),
-					);
-				}
-				if ( $debit_amount > woo_wallet()->wallet->get_wallet_balance( get_current_user_id(), 'edit' ) ) {
-					return array(
-						'is_valid' => false,
-						'message'  => __( 'Entered amount is greater than current wallet amount.', 'woo-wallet' ),
-					);
-				}
-
-				$debit_transaction_id = woo_wallet()->wallet->debit( get_current_user_id(), $debit_amount, $debit_note );
-				if ( $debit_transaction_id ) {
-					update_wallet_transaction_meta( $debit_transaction_id, '_wallet_transfer_charge', $transfer_charge, get_current_user_id() );
-					do_action( 'woo_wallet_transfer_amount_debited', $debit_transaction_id, get_current_user_id(), $whom->ID );
-					$credit_transaction_id = woo_wallet()->wallet->credit( $whom->ID, $credit_amount, $credit_note );
-					do_action( 'woo_wallet_transfer_amount_credited', $credit_transaction_id, $whom->ID, get_current_user_id() );
-					$response = array(
-						'is_valid' => true,
-						'message'  => __( 'Amount transferred successfully!', 'woo-wallet' ),
-					);
-				}
-			} else {
-				$response = array(
+			if ( ! isset( $_POST['woo_wallet_transfer'] ) || ! wp_verify_nonce( wp_unslash( $_POST['woo_wallet_transfer'] ), 'woo_wallet_transfer' ) ) { // phpcs:ignore WordPress.Security.ValidatedSanitizedInput.InputNotSanitized
+				return array(
 					'is_valid' => false,
 					'message'  => __( 'Cheatin&#8217; huh?', 'woo-wallet' ),
 				);
 			}
-			return $response;
+
+			$current_user_id = get_current_user_id();
+			if ( ! $current_user_id ) {
+				return array(
+					'is_valid' => false,
+					'message'  => __( 'You must be logged in to transfer funds.', 'woo-wallet' ),
+				);
+			}
+
+			// Single-use idempotency claim — defeats parallel-burst replay of the same form.
+			// Nonces alone are not consumed on use, so an attacker can fire N concurrent POSTs
+			// with one captured nonce. The transient is created per-form-render and must be
+			// claimed atomically here; a second concurrent submission with the same key fails.
+			$idem_key = isset( $_POST['woo_wallet_idempotency_key'] ) ? sanitize_key( wp_unslash( $_POST['woo_wallet_idempotency_key'] ) ) : '';
+			if ( $idem_key && ! $this->claim_transfer_idempotency_key( $current_user_id, $idem_key ) ) {
+				return array(
+					'is_valid' => false,
+					'message'  => __( 'This transfer was already submitted. Please refresh the form and try again.', 'woo-wallet' ),
+				);
+			}
+
+			// Per-user soft rate limit: blocks bursts before they reach the ledger.
+			$rate_limit = (int) apply_filters( 'woo_wallet_transfer_rate_limit_per_minute', 5, $current_user_id );
+			$rate_key   = 'woo_wallet_xfer_rate_' . $current_user_id;
+			$rate_count = (int) get_transient( $rate_key );
+			if ( $rate_limit > 0 && $rate_count >= $rate_limit ) {
+				return array(
+					'is_valid' => false,
+					'message'  => __( 'Too many transfers in a short time. Please wait a minute and try again.', 'woo-wallet' ),
+				);
+			}
+			set_transient( $rate_key, $rate_count + 1, MINUTE_IN_SECONDS );
+
+			$whom_id = isset( $_POST['woo_wallet_transfer_user_id'] ) ? absint( sanitize_text_field( wp_unslash( $_POST['woo_wallet_transfer_user_id'] ) ) ) : 0;
+			$amount  = isset( $_POST['woo_wallet_transfer_amount'] ) ? floatval( sanitize_text_field( wp_unslash( $_POST['woo_wallet_transfer_amount'] ) ) ) : 0;
+			$whom_id = absint( apply_filters( 'woo_wallet_transfer_user_id', $whom_id ) );
+
+			// Reject non-positive amounts at the boundary instead of silently coercing them
+			// inside the ledger — keeps any third-party sign-flipping filter from creating credits.
+			if ( $amount <= 0 ) {
+				return array(
+					'is_valid' => false,
+					'message'  => __( 'Transfer amount must be greater than zero.', 'woo-wallet' ),
+				);
+			}
+
+			$whom = $whom_id ? get_userdata( $whom_id ) : false;
+			if ( ! $whom ) {
+				return array(
+					'is_valid' => false,
+					'message'  => __( 'Invalid user', 'woo-wallet' ),
+				);
+			}
+			if ( $current_user_id === (int) $whom->ID ) {
+				return array(
+					'is_valid' => false,
+					'message'  => sprintf( __( 'Invalid user', 'woo-wallet' ) ),
+				);
+			}
+
+			$min_transfer_amount = woo_wallet()->settings_api->get_option( 'min_transfer_amount', '_wallet_settings_general', 0 );
+			if ( $min_transfer_amount && $min_transfer_amount > $amount ) {
+				return array(
+					'is_valid' => false,
+					/* translators: Max transfer amount */
+					'message'  => sprintf( __( 'Minimum transfer amount is %s', 'woo-wallet' ), wc_price( $min_transfer_amount, woo_wallet_wc_price_args() ) ),
+				);
+			}
+
+			$current_user_obj = get_userdata( $current_user_id );
+			/* translators: user_email */
+			$credit_note = isset( $_POST['woo_wallet_transfer_note'] ) && ! empty( $_POST['woo_wallet_transfer_note'] ) ? sanitize_text_field( wp_unslash( $_POST['woo_wallet_transfer_note'] ) ) : sprintf( __( 'Wallet funds received from %s', 'woo-wallet' ), $current_user_obj->user_email );
+			/* translators: user_email */
+			$debit_note  = sprintf( __( 'Wallet funds transfer to %s', 'woo-wallet' ), $whom->user_email );
+			$credit_note = apply_filters( 'woo_wallet_transfer_credit_transaction_note', $credit_note, $whom, $amount );
+			$debit_note  = apply_filters( 'woo_wallet_transfer_debit_transaction_note', $debit_note, $whom, $amount );
+
+			$transfer_charge_type   = woo_wallet()->settings_api->get_option( 'transfer_charge_type', '_wallet_settings_general', 'percent' );
+			$transfer_charge_amount = woo_wallet()->settings_api->get_option( 'transfer_charge_amount', '_wallet_settings_general', 0 );
+			if ( 'percent' === $transfer_charge_type ) {
+				$transfer_charge = ( $amount * $transfer_charge_amount ) / 100;
+			} else {
+				$transfer_charge = $transfer_charge_amount;
+			}
+			$transfer_charge = (float) apply_filters( 'woo_wallet_transfer_charge_amount', $transfer_charge, $whom );
+			$credit_amount   = (float) apply_filters( 'woo_wallet_transfer_credit_amount', $amount, $whom );
+			$debit_amount    = (float) apply_filters( 'woo_wallet_transfer_debit_amount', $amount + $transfer_charge, $whom );
+
+			if ( $debit_amount <= 0 ) {
+				return array(
+					'is_valid' => false,
+					'message'  => __( 'Transfer amount must be greater than zero.', 'woo-wallet' ),
+				);
+			}
+
+			// Atomic move: balance check + debit + credit run inside a single InnoDB transaction
+			// guarded by per-user GET_LOCKs on both sender and recipient. No TOCTOU window.
+			$result = woo_wallet()->wallet->transfer( $current_user_id, (int) $whom->ID, $debit_amount, $debit_note, $credit_note, $credit_amount );
+			if ( ! $result ) {
+				return array(
+					'is_valid' => false,
+					'message'  => __( 'Entered amount is greater than current wallet amount.', 'woo-wallet' ),
+				);
+			}
+
+			update_wallet_transaction_meta( $result['debit'], '_wallet_transfer_charge', $transfer_charge, $current_user_id );
+			do_action( 'woo_wallet_transfer_amount_debited', $result['debit'], $current_user_id, $whom->ID );
+			if ( ! empty( $result['credit'] ) ) {
+				do_action( 'woo_wallet_transfer_amount_credited', $result['credit'], $whom->ID, $current_user_id );
+			}
+
+			return array(
+				'is_valid' => true,
+				'message'  => __( 'Amount transferred successfully!', 'woo-wallet' ),
+			);
+		}
+
+		/**
+		 * Atomically claim a per-form idempotency token. Returns true the first time the
+		 * token is seen, false on every subsequent (concurrent or replayed) submission.
+		 *
+		 * Implementation: the token is stored in a transient at form-render time. We
+		 * acquire it via delete_transient(), which compiles to a single DELETE on the
+		 * options table — atomic at the DB level. Two concurrent requests cannot both
+		 * succeed in deleting the same row.
+		 *
+		 * @param int    $user_id Owning user.
+		 * @param string $key     Token from the form.
+		 * @return bool True if claim succeeded (token was valid and is now consumed).
+		 */
+		private function claim_transfer_idempotency_key( $user_id, $key ) {
+			$transient_key = 'wwxfer_' . $user_id . '_' . $key;
+			if ( false === get_transient( $transient_key ) ) {
+				return false;
+			}
+			return (bool) delete_transient( $transient_key );
+		}
+
+		/**
+		 * Issue a fresh idempotency token for a transfer form render. Stored as a
+		 * transient under the user's id so only that user can later claim it.
+		 *
+		 * @param int $user_id User the form will be submitted by.
+		 * @return string Token to embed in a hidden form field.
+		 */
+		public function issue_transfer_idempotency_key( $user_id ) {
+			$user_id = absint( $user_id );
+			if ( ! $user_id ) {
+				return '';
+			}
+			$key = wp_generate_password( 24, false, false );
+			set_transient( 'wwxfer_' . $user_id . '_' . $key, 1, 10 * MINUTE_IN_SECONDS );
+			return $key;
 		}
 
 		/**
@@ -687,8 +758,6 @@ if ( ! class_exists( 'Woo_Wallet_Frontend' ) ) {
 				return;
 			}
 			wp_enqueue_style( 'dashicons' );
-			wp_enqueue_style( 'woo-wallet-payment-jquery-ui' );
-			wp_enqueue_script( 'jquery-ui-tooltip' );
 			woo_wallet()->get_template( 'woo-wallet-partial-payment.php' );
 		}
 
@@ -844,18 +913,10 @@ if ( ! class_exists( 'Woo_Wallet_Frontend' ) ) {
 			} elseif ( is_wallet_account_locked() ) {
 				woo_wallet()->get_template( 'no-access.php' );
 			} else {
-				wp_enqueue_style( 'jquery-daterangepicker-style' );
-				wp_enqueue_style( 'woo-wallet-payment-jquery-ui' );
 				wp_enqueue_style( 'dashicons' );
 				wp_enqueue_style( 'select2' );
-				wp_enqueue_style( 'jquery-datatables-style' );
-				wp_enqueue_style( 'jquery-datatables-responsive-style' );
 				wp_enqueue_style( 'woo-wallet-style' );
-				wp_enqueue_script( 'jquery-datatables-script' );
-				wp_enqueue_script( 'jquery-datatables-responsive-script' );
 				wp_enqueue_script( 'selectWoo' );
-				wp_enqueue_script( 'jquery-ui-datepicker' );
-				wp_enqueue_script( 'jquery-daterangepicker-script' );
 				wp_enqueue_script( 'wc-endpoint-wallet' );
 				woo_wallet()->get_template( 'wc-endpoint-wallet.php' );
 			}
