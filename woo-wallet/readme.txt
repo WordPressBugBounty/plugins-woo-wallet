@@ -4,7 +4,7 @@ Tags: woocommerce wallet, cashback, store credit, partial payment, digital walle
 Requires PHP: 7.4
 Requires at least: 6.4
 Tested up to: 6.9
-Stable tag: 1.5.18
+Stable tag: 1.6.0
 Donate link: https://donate.stripe.com/fZeaFydax6NNfjWeVc
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
@@ -54,8 +54,16 @@ Beyond core wallet functionality, TeraWallet features a robust **Cashback Reward
     *   Lock/Unlock user wallets for security and fraud prevention.
 *   🔗 **Seamless Integrations:**
     *   Full support for WooCommerce Blocks checkout.
-    *   Compatible with WPML, Multi Currency switchers, and WooCommerce Subscriptions.
+    *   Compatible with WPML and WooCommerce Subscriptions.
     *   Built-in support for Dokan, WCFM, and WCMarketplace.
+
+*   🌍 **Multi-Currency Support:** First-class integrations with the most-used WooCommerce currency switchers. Wallet balances, top-ups, transfers, and cashback are all converted through the active provider's live rates.
+    *   [WOOCS – WooCommerce Currency Switcher (FOX)](https://wordpress.org/plugins/woocommerce-currency-switcher/)
+    *   [WPML Multilingual & Multi-Currency](https://wpml.org/) (WCML)
+    *   [CURCY – Multi Currency for WooCommerce](https://wordpress.org/plugins/woo-multi-currency/) (VillaTheme)
+    *   [Aelia Currency Switcher](https://aelia.co/shop/currency-switcher-woocommerce/)
+    *   [YayCurrency – Multi-Currency Switcher](https://wordpress.org/plugins/yaycurrency/)
+    *   **Generic fallback** for any other plugin that filters `woocommerce_currency` — active-currency detection still works, conversion falls open to the stored amount with an audit-log warning.
 
 == 🚀 Pro Features ==
 
@@ -131,6 +139,26 @@ You can find the documentation for our [Wallet REST API here](https://github.com
 
 == Changelog ==
 
+= v1.6.0 (May 04, 2026) =
+– **New:-** add new settings fields and hooks for Woo Wallet
+– **New:-** Implemented various input fields including AttachmentField, CheckboxField, ColorField, HtmlField, MultiSelectField, MulticheckField, NumberField, PasswordField, RadioField, SelectField, TextField, and TextareaField.
+– **New:-** Created a custom hook `useSettings` for managing settings state, loading, and saving.
+– **New:-** Added a field types registry to manage different input types dynamically.
+– **New:-** Introduced CSS styles for the new settings interface, ensuring compatibility with light and dark themes.
+– **New:-** Integrated REST API calls for fetching and saving settings data.
+– **New:-** Multi-currency provider abstraction with first-class adapters for WOOCS/FOX, WPML/WCML, CURCY, Aelia, and YayCurrency, plus a generic fallback for any other plugin that filters `woocommerce_currency`.
+– **New:-** Per-row currency audit columns (`original_amount`, `original_currency`, `original_rate`, `mode`) and a `(user_id, currency, deleted)` index on the wallet transactions table for accurate historical reporting.
+– **New:-** Additive REST surface: `/terawallet/v1/me/balance` now returns `base_currency`, `base_amount`, `mode`, and a `balances[]` array; `/me/transfer` and `/me/topup` accept an optional `currency` argument; `/wc/v3/wallet` exposes the new audit fields and a `currency` query filter.
+– **New:-** Admin endpoint `GET /wc/v3/wallet/multicurrency` and a Currency Mode panel in the React settings app that surfaces the active provider, base/active currencies, and the effective ledger mode.
+– **Security:-** Hardened the debit balance gate in `recode_transaction()` to read the raw ledger SUM directly instead of the filtered `get_wallet_balance()` value. Closes an overdraft window where any third-party hook on `woo_wallet_current_balance` (credit-expiry, redeemed-totals plugins) could inflate the perceived balance and let a user debit into negative territory.
+– **Security:-** Wrapped `wallet_credit_purchase()` in a per-order `GET_LOCK` with re-fetch inside the lock so duplicate gateway IPN deliveries (PayPal/Stripe webhook retries) can no longer both pass the `_wc_wallet_purchase_credited` meta guard and double-credit the wallet.
+– **Fix:-** Partial-payment debit now records the order currency, matching the cancellation refund — no more debit/refund pairs landing in different currencies.
+– **Fix:-** Cashback debit on order cancellation now passes the order currency, eliminating a second source of mixed-currency rows.
+– **Fix:-** Mode-aware balance reads — single-base sites continue to sum normalized rows; per-currency sites filter by the active currency, so a user with EUR and USD activity no longer sees an undefined-currency total.
+– **Tweak:-** Top-up orders honour the requested currency end-to-end: `WooWallet_Topup_Service::create_order()` calls `$order->set_currency()` before totals are calculated, so the gateway charges in the requested currency.
+– **Tweak:-** `woo_wallet_wc_price_args()` is now mode-aware; in per-currency mode it defaults to the active provider's currency while explicit per-row currency overrides still win.
+– **Tweak:-** Database migration `1.6.0` is idempotent — fresh installs and upgrades both land on the new schema; pre-1.6 rows keep working with `original_*` NULL and `mode=0`.
+
 = v1.5.18 (April 23, 2026) =
 – **New:-** Added Go Pro admin page showcasing Pro features with a Free vs Pro comparison and license activation UI, replacing the legacy Extensions page.
 – **Security:-** Implement idempotency key for wallet transfers to prevent duplicate submissions and TOCTOU race condition vulnerabilities.
@@ -178,6 +206,9 @@ You can find the documentation for our [Wallet REST API here](https://github.com
 – **Fix:-** Refund issue.
 
 == Upgrade Notice ==
+
+= 1.6.0 =
+Security: closes an overdraft window in the debit balance gate and a duplicate-IPN double-credit window in the top-up callback — recommended upgrade for all sites. Also adds multi-currency provider adapters (WOOCS, WCML, CURCY, Aelia, YayCurrency + generic fallback), fixes ledger currency bugs in partial-payment and cashback flows, and extends the REST API with per-currency fields. Schema migration is automatic and idempotent — back up before upgrading.
 
 = 1.5.18 =
 Security fix for wallet transfer race conditions, new Go Pro admin page, and database query optimizations.
