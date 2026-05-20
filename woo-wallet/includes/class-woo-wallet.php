@@ -63,6 +63,14 @@ final class Woo_Wallet {
 	 * Class constructor
 	 */
 	public function __construct() {
+		// Self-assign before doing anything else so a re-entrant
+		// `woo_wallet()` call (e.g. `Woo_Wallet_Frontend::instance()`
+		// auto-instantiating during `includes()` and dereferencing
+		// `woo_wallet()->settings_api` from its constructor) returns this
+		// same instance instead of triggering a second `new self()` that
+		// double-registers every hook in `init_hooks()`.
+		self::$_instance = $this;
+
 		$this->includes();
 		$this->init_hooks();
 		do_action( 'woo_wallet_loaded' );
@@ -142,6 +150,8 @@ final class Woo_Wallet {
 		add_action( 'init', array( $this, 'woocommerce_loaded_callback' ) );
 		// Registers WooCommerce Blocks integration.
 		add_action( 'woocommerce_blocks_loaded', array( __CLASS__, 'add_woocommerce_block_support' ) );
+		// Register Gutenberg blocks.
+		add_action( 'init', array( $this, 'register_wallet_balance_block' ) );
 		do_action( 'woo_wallet_init' );
 	}
 
@@ -169,6 +179,7 @@ final class Woo_Wallet {
 		}
 
 		add_action( 'woocommerce_order_status_cancelled', array( $this->wallet, 'process_cancelled_order' ) );
+		add_action( 'woocommerce_order_refunded', array( $this->wallet, 'process_refunded_order' ), 10, 2 );
 
 		add_filter( 'woocommerce_reports_get_order_report_query', array( $this, 'woocommerce_reports_get_order_report_query' ) );
 		add_filter( 'woocommerce_analytics_revenue_query_args', array( $this, 'remove_wallet_rechargable_order_from_analytics' ) );
@@ -213,6 +224,24 @@ final class Woo_Wallet {
 	 */
 	public function woo_wallet_widget_init() {
 		register_widget( 'Woo_Wallet_Topup' );
+	}
+
+	/**
+	 * Register the Wallet Balance Gutenberg block.
+	 *
+	 * Uses the block.json metadata in the build directory. WordPress auto-discovers
+	 * scripts, styles, and the render callback from the metadata file.
+	 *
+	 * @since 1.7.0
+	 */
+	public function register_wallet_balance_block() {
+		if ( ! function_exists( 'register_block_type' ) ) {
+			return;
+		}
+		$block_dir = WOO_WALLET_ABSPATH . 'build/blocks/mini-wallet';
+		if ( file_exists( $block_dir . '/block.json' ) ) {
+			register_block_type( $block_dir );
+		}
 	}
 	/**
 	 * Override WooCommerce email template directory.

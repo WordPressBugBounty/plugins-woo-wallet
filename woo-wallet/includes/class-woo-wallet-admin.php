@@ -90,6 +90,9 @@ if ( ! class_exists( 'Woo_Wallet_Admin' ) ) {
 			add_action( 'woocommerce_order_action_recalculate_order_cashback', array( $this, 'recalculate_order_cashback' ) );
 
 			add_action( 'admin_notices', array( $this, 'show_promotions' ) );
+			add_action( 'admin_notices', array( $this, 'show_161_notices' ) );
+			add_action( 'admin_notices', array( $this, 'show_purge_errors' ) );
+			add_action( 'wp_ajax_woowallet_dismiss_161_notice', array( $this, 'dismiss_161_notice' ) );
 			// Redirect old ?page=woo-wallet-actions bookmarks to the unified settings page.
 			add_action( 'admin_init', array( $this, 'redirect_legacy_actions_page' ) );
 			add_filter( 'woocommerce_settings_pages', array( $this, 'add_woocommerce_account_endpoint_settings' ) );
@@ -359,91 +362,6 @@ if ( ! class_exists( 'Woo_Wallet_Admin' ) ) {
 			include_once WOO_WALLET_ABSPATH . 'templates/admin/html-exporter.php';
 		}
 		/**
-		 * Plugin action settings page
-		 */
-		public function plugin_actions_page() {
-			$screen               = get_current_screen();
-			$wallet_actions       = new WOO_Wallet_Actions();
-			$woo_wallet_screen_id = sanitize_title( __( 'TeraWallet', 'woo-wallet' ) );
-			if ( in_array( $screen->id, array( "{$woo_wallet_screen_id}_page_woo-wallet-actions" ), true ) && isset( $_GET['action'] ) && isset( $wallet_actions->actions[ $_GET['action'] ] ) ) { // phpcs:ignore WordPress.Security.NonceVerification
-				$this->display_action_settings();
-			} else {
-				$this->display_actions_table();
-			}
-		}
-		/**
-		 * Plugin action setting init
-		 */
-		public function display_action_settings() {
-			$wallet_actions = WOO_Wallet_Actions::instance();
-			?>
-			<div class="wrap woocommerce">
-				<form method="post">
-					<?php
-					$wallet_actions->actions[ $_GET['action'] ]->init_settings(); //phpcs:ignore
-					$wallet_actions->actions[ $_GET['action'] ]->admin_options(); //phpcs:ignore
-					?>
-					<p class="submit">
-						<button name="save" class="button button-primary" type="submit" value="<?php esc_attr_e( 'Save changes', 'woo-wallet' ); ?>"><?php esc_html_e( 'Save changes', 'woo-wallet' ); ?></button>
-						<?php wp_nonce_field( 'wallet-action-settings' ); ?>
-					</p>
-				</form>
-			</div>
-			<?php
-		}
-		/**
-		 * Plugin action setting table
-		 */
-		public function display_actions_table() {
-			$wallet_actions = WOO_Wallet_Actions::instance();
-			echo '<div class="wrap">';
-			echo '<h2>' . esc_html__( 'Wallet actions', 'woo-wallet' ) . '</h2>';
-			settings_errors();
-			?>
-			<p><?php esc_html_e( 'Integrated wallet actions are listed below. If active those actions will be triggered with respective WordPress hook.', 'woo-wallet' ); ?></p>
-			<table class="wc_emails widefat" cellspacing="0">
-				<thead>
-					<tr>
-						<th class="wc-email-settings-table-status"></th>
-						<th class="wc-email-settings-table-name"><?php esc_html_e( 'Action', 'woo-wallet' ); ?></th>
-						<th class="wc-email-settings-table-name"><?php esc_html_e( 'Description', 'woo-wallet' ); ?></th>
-						<th class="wc-email-settings-table-actions"></th>						
-					</tr>
-				</thead>
-				<tbody class="ui-sortable">
-					<?php foreach ( $wallet_actions->actions as $action ) : ?>
-						<tr data-gateway_id="<?php echo esc_attr( $action->get_action_id() ); ?>">
-							<td>
-								<?php
-								if ( $action->is_enabled() ) {
-									echo '<span class="status-enabled tips" data-tip="' . esc_attr__( 'Enabled', 'woo-wallet' ) . '">' . esc_html__( 'Yes', 'woo-wallet' ) . '</span>';
-								} else {
-									echo '<span class="status-disabled tips" data-tip="' . esc_attr__( 'Disabled', 'woo-wallet' ) . '">-</span>';
-								}
-								?>
-							</td>
-							<td class="name" width=""><a href="<?php echo esc_url( admin_url( 'admin.php?page=woo-wallet-actions&action=' . strtolower( $action->id ) ) ); ?>" class="wc-payment-gateway-method-title"><?php echo esc_html( $action->get_action_title() ); ?></a></td>
-							<td class="description" width=""><?php echo $action->get_action_description(); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped ?></td>
-							<td class="action" width="1%">
-								<a class="button alignright" href="<?php echo esc_url( admin_url( 'admin.php?page=woo-wallet-actions&action=' . strtolower( $action->id ) ) ); ?>">
-									<?php
-									if ( $action->is_enabled() ) {
-										esc_html_e( 'Manage', 'woo-wallet' );
-									} else {
-										esc_html_e( 'Setup', 'woo-wallet' );
-									}
-									?>
-								</a>
-							</td>
-						</tr>
-					<?php endforeach; ?>
-				</tbody>
-			</table>
-			<?php
-			echo '</div>';
-		}
-
-		/**
 		 * Register and enqueue admin styles and scripts
 		 *
 		 * @global type $post
@@ -579,9 +497,12 @@ if ( ! class_exists( 'Woo_Wallet_Admin' ) ) {
 		 * Admin add wallet balance form
 		 */
 		public function add_balance_to_user_wallet() {
-			$user_id  = filter_input( INPUT_GET, 'user_id' );
-			$currency = apply_filters( 'woo_wallet_user_currency', '', $user_id );
-			$user     = new WP_User( $user_id );
+			$user_id       = filter_input( INPUT_GET, 'user_id' );
+			$currency      = apply_filters( 'woo_wallet_user_currency', '', $user_id );
+			$user          = new WP_User( $user_id );
+			$base_currency = class_exists( 'Woo_Wallet_Currency_Manager' )
+				? Woo_Wallet_Currency_Manager::instance()->get_base_currency()
+				: strtoupper( (string) get_option( 'woocommerce_currency', 'USD' ) );
 			?>
 			<div class="wrap">
 				<?php settings_errors(); ?>
@@ -589,7 +510,7 @@ if ( ! class_exists( 'Woo_Wallet_Admin' ) ) {
 				<p>
 					<?php
 					esc_html_e( 'Current wallet balance: ', 'woo-wallet' );
-					echo woo_wallet()->wallet->get_wallet_balance( $user_id ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+					echo woo_wallet()->wallet->get_wallet_balance( $user_id, 'view', $base_currency ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 					?>
 				</p>
 				<form id="posts-filter" method="post">
@@ -649,14 +570,17 @@ if ( ! class_exists( 'Woo_Wallet_Admin' ) ) {
 		 * Display transaction details page
 		 */
 		public function transaction_details_page() {
-			$user_id = filter_input( INPUT_GET, 'user_id' );
+			$user_id       = filter_input( INPUT_GET, 'user_id' );
+			$base_currency = class_exists( 'Woo_Wallet_Currency_Manager' )
+				? Woo_Wallet_Currency_Manager::instance()->get_base_currency()
+				: strtoupper( (string) get_option( 'woocommerce_currency', 'USD' ) );
 			?>
 			<div class="wrap">
 				<h2><?php esc_html_e( 'Transaction details', 'woo-wallet' ); ?> <a style="text-decoration: none;" href="<?php echo esc_url( add_query_arg( array( 'page' => 'woo-wallet' ), admin_url( 'admin.php' ) ) ); ?>"><span class="dashicons dashicons-editor-break" style="vertical-align: middle;"></span></a></h2>
 				<p>
 				<?php
 				esc_html_e( 'Current wallet balance: ', 'woo-wallet' );
-				echo woo_wallet()->wallet->get_wallet_balance( $user_id ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
+				echo woo_wallet()->wallet->get_wallet_balance( $user_id, 'view', $base_currency ); // phpcs:ignore WordPress.Security.EscapeOutput.OutputNotEscaped
 				?>
 				</p>
 				<?php do_action( 'before_woo_wallet_transaction_details_page', $user_id ); ?>
@@ -1201,19 +1125,173 @@ if ( ! class_exists( 'Woo_Wallet_Admin' ) ) {
 			return $order_actions;
 		}
 		/**
-		 * Recalculate and send order cashback.
+		 * Recalculate and adjust order cashback (R4).
+		 *
+		 * Replaces the previous direct `update_wallet_transaction(amount=...)`
+		 * pattern with a compensating credit/debit row written via
+		 * `Woo_Wallet_Wallet::adjust_cashback()`. The original cashback row is
+		 * never mutated so the append-only ledger invariant is preserved.
+		 *
+		 * Short-circuits with an admin notice when the recomputed delta is zero
+		 * (L4 fix) so a no-op recalculation does not silently rewrite to 0.
 		 *
 		 * @param WC_Order $order order.
+		 *
+		 * @since 1.6.1 Rewrote to use adjust_cashback() (R4).
 		 */
 		public function recalculate_order_cashback( $order ) {
-			$cashback_amount = woo_wallet()->cashback->calculate_cashback( false, $order->get_id(), true );
-			if ( in_array( $order->get_status(), apply_filters( 'wallet_cashback_order_status', woo_wallet()->settings_api->get_option( 'process_cashback_status', '_wallet_settings_credit', array( 'processing', 'completed' ) ) ), true ) ) {
-				woo_wallet()->wallet->wallet_cashback( $order->get_id() );
-				$transaction_id = $order->get_meta( '_general_cashback_transaction_id' );
-				if ( $transaction_id ) {
-					update_wallet_transaction( $transaction_id, $order->get_customer_id(), array( 'amount' => $cashback_amount ), array( '%f' ) );
-				}
+			$cashback_statuses = apply_filters( 'wallet_cashback_order_status', woo_wallet()->settings_api->get_option( 'process_cashback_status', '_wallet_settings_credit', array( 'processing', 'completed' ) ) );
+			if ( ! in_array( $order->get_status(), $cashback_statuses, true ) ) {
+				return;
 			}
+
+			// Recompute expected cashback from the live order.
+			$new_cashback = (float) woo_wallet()->cashback->calculate_cashback( false, $order->get_id(), true );
+
+			// Sum the existing credited rows via the array-aware reader.
+			$existing_cashback = (float) get_total_order_cashback_amount( $order->get_id() );
+
+			if ( 0.0 === $existing_cashback ) {
+				// No previous cashback exists — run the normal credit path instead.
+				woo_wallet()->wallet->wallet_cashback( $order->get_id() );
+				return;
+			}
+
+			$delta = $new_cashback - $existing_cashback;
+
+			if ( abs( $delta ) < 0.001 ) {
+				// No change — surface admin notice instead of writing a no-op row.
+				$order->add_order_note( __( 'Cashback recalculation: amount unchanged, no adjustment row written.', 'woo-wallet' ) );
+				return;
+			}
+
+			$transaction_id = woo_wallet()->wallet->adjust_cashback( $order, $delta, 'manual_recalculate' );
+			if ( $transaction_id ) {
+				/* translators: 1: formatted amount (positive or negative) */
+				$order->add_order_note( sprintf( __( 'Cashback adjusted by %s via manual recalculation.', 'woo-wallet' ), wc_price( $delta, woo_wallet_wc_price_args( $order->get_customer_id() ) ) ) );
+			}
+		}
+
+		/**
+		 * Display one-time dismissible admin notices seeded by the 1.6.1 migration.
+		 *
+		 * Two notices are seeded when an existing site upgrades:
+		 *   tw_161_cashback_refund_notice        — prompts to enable refund clawback.
+		 *   tw_161_coupon_cashback_totals_notice  — explains the coupon-cashback totals change.
+		 *
+		 * Both are dismissed via AJAX (woowallet_dismiss_161_notice action).
+		 *
+		 * @since 1.6.1
+		 */
+		public function show_161_notices() {
+			if ( ! current_user_can( 'manage_woocommerce' ) ) {
+				return;
+			}
+
+			$settings_url = admin_url( 'admin.php?page=woo-wallet-settings#_wallet_settings_credit' );
+
+			if ( get_transient( 'tw_161_cashback_refund_notice' ) ) {
+				$nonce = wp_create_nonce( 'woowallet_dismiss_notice' );
+				?>
+				<div class="notice notice-info is-dismissible" id="tw-161-refund-notice">
+					<p>
+						<?php
+						echo wp_kses_post(
+							sprintf(
+								/* translators: 1: settings page link open, 2: settings page link close */
+								__( '<strong>TeraWallet 1.6.1:</strong> Cashback can now be clawed back when an order is refunded. This is <strong>off by default</strong> — %1$senable it in Settings → Wallet Credit → Refund Clawback%2$s if you want it.', 'woo-wallet' ),
+								'<a href="' . esc_url( $settings_url ) . '">',
+								'</a>'
+							)
+						);
+						?>
+					</p>
+					<button type="button" class="notice-dismiss tw-161-dismiss" data-notice="cashback_refund" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+						<span class="screen-reader-text"><?php esc_html_e( 'Dismiss this notice', 'woo-wallet' ); ?></span>
+					</button>
+				</div>
+				<script>
+				jQuery(document).ready(function($){
+					$(document).on('click', '.tw-161-dismiss', function(){
+						var notice = $(this).data('notice');
+						var nonce  = $(this).data('nonce');
+						$(this).closest('.notice').fadeOut();
+						wp.ajax.send('woowallet_dismiss_161_notice', { data: { notice: notice, nonce: nonce } });
+					});
+				});
+				</script>
+				<?php
+			}
+
+			if ( get_transient( 'tw_161_coupon_cashback_totals_notice' ) ) {
+				$nonce = wp_create_nonce( 'woowallet_dismiss_notice' );
+				?>
+				<div class="notice notice-info is-dismissible" id="tw-161-coupon-notice">
+					<p>
+						<?php
+						echo wp_kses_post(
+							sprintf(
+								/* translators: 1: settings page link open, 2: settings page link close */
+								__( '<strong>TeraWallet 1.6.1:</strong> Coupon cashback is now recomputed from the live order at credit time rather than trusting the checkout-frozen meta. For upgraded sites the legacy discount_total/total mutation is preserved via an internal flag. %1$sReview your cashback settings.%2$s', 'woo-wallet' ),
+								'<a href="' . esc_url( $settings_url ) . '">',
+								'</a>'
+							)
+						);
+						?>
+					</p>
+					<button type="button" class="notice-dismiss tw-161-dismiss" data-notice="coupon_cashback_totals" data-nonce="<?php echo esc_attr( $nonce ); ?>">
+						<span class="screen-reader-text"><?php esc_html_e( 'Dismiss this notice', 'woo-wallet' ); ?></span>
+					</button>
+				</div>
+				<?php
+			}
+		}
+
+		/**
+		 * AJAX handler to dismiss a 1.6.1 upgrade notice.
+		 *
+		 * @since 1.6.1
+		 */
+		public function dismiss_161_notice() {
+			check_ajax_referer( 'woowallet_dismiss_notice', 'nonce' );
+			if ( ! current_user_can( 'manage_woocommerce' ) ) {
+				wp_die( -1 );
+			}
+
+			$notice = isset( $_POST['notice'] ) ? sanitize_key( wp_unslash( $_POST['notice'] ) ) : '';
+
+			if ( 'cashback_refund' === $notice ) {
+				delete_transient( 'tw_161_cashback_refund_notice' );
+				set_transient( 'tw_161_cashback_refund_notice_dismissed', '1', 0 );
+			} elseif ( 'coupon_cashback_totals' === $notice ) {
+				delete_transient( 'tw_161_coupon_cashback_totals_notice' );
+				set_transient( 'tw_161_coupon_cashback_totals_notice_dismissed', '1', 0 );
+			}
+
+			wp_send_json_success();
+		}
+		/**
+		 * Render any errors stashed by the Delete Logs bulk action on the
+		 * TeraWallet admin screen, then clear them.
+		 *
+		 * @since 1.6.1
+		 */
+		public function show_purge_errors() {
+			$screen = get_current_screen();
+			if ( ! $screen || 'toplevel_page_woo-wallet' !== $screen->id ) {
+				return;
+			}
+			$transient_key = 'woo_wallet_purge_error_' . get_current_user_id();
+			$errors        = get_transient( $transient_key );
+			if ( ! $errors || ! is_array( $errors ) ) {
+				return;
+			}
+			delete_transient( $transient_key );
+			echo '<div class="notice notice-error is-dismissible"><p><strong>' . esc_html__( 'TeraWallet: some users could not be purged.', 'woo-wallet' ) . '</strong></p><ul style="list-style:disc;margin-left:20px;">';
+			foreach ( $errors as $error ) {
+				echo '<li>' . esc_html( $error ) . '</li>';
+			}
+			echo '</ul></div>';
 		}
 		/**
 		 * Show promotional message.
