@@ -186,7 +186,7 @@ function woo_wallet_update_161_db_schema() {
 	$settings = get_option( '_wallet_settings_credit', null );
 
 	// Only runs on true upgrades (option already existed before 1.6.1).
-	if ( ! is_null( $settings ) ) {
+	if ( ! is_null( $settings ) && is_array( $settings ) ) {
 		// (a) Preserve per-item cap scope for existing sites.
 		if ( ! isset( $settings['max_cashback_scope'] ) ) {
 			$settings['max_cashback_scope'] = 'per_item';
@@ -232,29 +232,34 @@ function woo_wallet_update_161_db_schema() {
  * @since 1.6.1
  */
 function woo_wallet_update_161_merge_action_settings() {
-	// Install runs before `woocommerce_loaded`, so the actions loader hasn't
-	// fired yet. Load the abstract + registry up-front (idempotent require_once)
-	// so we can enumerate the real action ids instead of guessing.
-	if ( ! class_exists( 'WooWalletAction' ) ) {
-		require_once WOO_WALLET_ABSPATH . 'includes/abstracts/abstract-woo-wallet-actions.php';
-	}
-	if ( ! class_exists( 'WOO_Wallet_Actions' ) ) {
-		require_once WOO_WALLET_ABSPATH . 'includes/class-woo-wallet-actions.php';
-	}
+	/*
+	 * The five core earning actions shipped in every pre-1.6.1 install. Each
+	 * persisted its settings under the WC_Settings_API option key
+	 * `woo_wallet_{id}_settings` (plugin_id `woo_wallet_` + action id).
+	 *
+	 * This list is intentionally hardcoded. The migration runs synchronously
+	 * from `Woo_Wallet_Install::update()` during plugin bootstrap — before
+	 * `plugins_loaded`/`init`/`woocommerce_loaded` — so it must NOT load the
+	 * `WooWalletAction` abstract or the `WOO_Wallet_Actions` registry: the
+	 * abstract extends `WC_Settings_API`, which fatals if WooCommerce's
+	 * autoloader is not yet registered (e.g. when `woo-wallet` loads before
+	 * `woocommerce`). Un-migrated third-party actions keep working via the
+	 * legacy fallback in `WooWalletAction::init_settings()`.
+	 */
+	$action_ids = array( 'daily_visits', 'new_registration', 'product_review', 'referrals', 'sell_content' );
 
 	$merged = get_option( '_wallet_settings_actions', array() );
 	if ( ! is_array( $merged ) ) {
 		$merged = array();
 	}
 
-	foreach ( WOO_Wallet_Actions::instance()->actions as $action ) {
-		$legacy_key   = $action->plugin_id . $action->id . '_settings';
-		$legacy_value = get_option( $legacy_key, null );
+	foreach ( $action_ids as $action_id ) {
+		$legacy_value = get_option( 'woo_wallet_' . $action_id . '_settings', null );
 		if ( ! is_array( $legacy_value ) ) {
 			continue;
 		}
 		foreach ( $legacy_value as $field_key => $field_value ) {
-			$merged_key = $action->id . '__' . $field_key;
+			$merged_key = $action_id . '__' . $field_key;
 			if ( ! array_key_exists( $merged_key, $merged ) ) {
 				$merged[ $merged_key ] = $field_value;
 			}
@@ -264,4 +269,24 @@ function woo_wallet_update_161_merge_action_settings() {
 	if ( ! empty( $merged ) ) {
 		update_option( '_wallet_settings_actions', $merged );
 	}
+}
+
+/**
+ * DB update 1.6.2: create the dedicated referral tracking table.
+ *
+ * `Woo_Wallet_Install::update()` only runs the registered `$db_updates`
+ * callbacks on upgrade — it never re-runs `create_tables()` — so a new table
+ * shipped in a release must be created here for existing installs. Fresh
+ * installs get the table from the full schema in `create_tables()`.
+ *
+ * `dbDelta()` is idempotent: it creates `woo_wallet_referrals` when absent and
+ * is a no-op once the table exists. No data backfill — the referral history
+ * starts fresh from 1.6.2 (legacy `_woo_wallet_referring_earning` user meta is
+ * left untouched and surfaced read-only as "legacy earnings").
+ *
+ * @since 1.6.2
+ */
+function woo_wallet_update_162_db_schema() {
+	require_once ABSPATH . 'wp-admin/includes/upgrade.php';
+	dbDelta( Woo_Wallet_Install::get_referrals_schema() );
 }
