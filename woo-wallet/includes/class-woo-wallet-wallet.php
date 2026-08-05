@@ -643,9 +643,12 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 					}
 					do_action( 'woo_wallet_partial_payment_completed', $transaction_id, $locked_order );
 				} else {
-					// Insufficient balance (e.g. spent before payment cleared). Hold the
-					// order for review rather than overdrafting the wallet.
-					$locked_order->update_status( 'on-hold', __( 'Wallet partial payment could not be debited (insufficient balance). Held for review. ', 'woo-wallet' ) );
+					// Debit refused (locked wallet, or balance spent before payment
+					// cleared). Hold the order for review rather than undercharging.
+					$fail_note = is_wallet_account_locked( $locked_order->get_customer_id() )
+						? __( 'Wallet partial payment could not be debited (wallet is locked). Held for review. ', 'woo-wallet' )
+						: __( 'Wallet partial payment could not be debited (insufficient balance). Held for review. ', 'woo-wallet' );
+					$locked_order->update_status( 'on-hold', $fail_note );
 					do_action( 'woo_wallet_partial_payment_debit_failed', $locked_order, $partial_payment_amount );
 				}
 			} finally {
@@ -725,7 +728,7 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 			}
 
 			try {
-				$locked_order = wc_get_order( $order_id );
+				$locked_order = WOO_Wallet_Helper::get_order_for_update( $order_id );
 				if ( ! $locked_order || $locked_order->get_meta( '_woo_wallet_partial_payment_refunded' ) ) {
 					return;
 				}
@@ -758,6 +761,16 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 					$credit_currency = $locked_order->get_currency( 'edit' );
 				}
 
+				// Claim before credit so a concurrent cancel/refund cannot double-pay.
+				$processed[] = (string) $refund_id;
+				$new_total   = $already + $refund_now;
+				$locked_order->update_meta_data( '_woo_wallet_partial_refunded_total', $new_total );
+				$locked_order->update_meta_data( '_woo_wallet_partial_refund_ids', $processed );
+				if ( $new_total + 0.001 >= $via_wallet ) {
+					$locked_order->update_meta_data( '_woo_wallet_partial_payment_refunded', true );
+				}
+				$locked_order->save();
+
 				$transaction_id = $this->credit(
 					$locked_order->get_customer_id(),
 					$credit_amount,
@@ -771,17 +784,13 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 				);
 
 				if ( $transaction_id ) {
-					$processed[] = (string) $refund_id;
-					$new_total   = $already + $refund_now;
-					WOO_Wallet_Helper::update_order_meta_data( $locked_order, '_woo_wallet_partial_refunded_total', $new_total );
-					WOO_Wallet_Helper::update_order_meta_data( $locked_order, '_woo_wallet_partial_refund_ids', $processed );
 					/* translators: wallet amount */
 					$locked_order->add_order_note( sprintf( __( '%s of the wallet payment refunded to the customer wallet (partial refund).', 'woo-wallet' ), wc_price( $refund_now, woo_wallet_wc_price_args( $locked_order->get_customer_id() ) ) ) );
-					if ( $new_total + 0.001 >= $via_wallet ) {
-						WOO_Wallet_Helper::update_order_meta_data( $locked_order, '_woo_wallet_partial_payment_refunded', true );
-					}
 					$locked_order->save();
 					do_action( 'woo_wallet_partial_payment_refunded', $order_id, $transaction_id, $refund_now );
+				} else {
+					$locked_order->add_order_note( __( 'Wallet partial refund was claimed but the credit failed. Manual review required.', 'woo-wallet' ) );
+					$locked_order->save();
 				}
 			} finally {
 				$wpdb->query( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
@@ -821,28 +830,33 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 			/**
 			 * Credit partial payment amount.
 			 *
-			 * Serialised via the same per-order GET_LOCK used by
-			 * `wallet_credit_purchase` so two concurrent cancel webhooks (or a
-			 * cancel racing with a status-change retry) cannot double-refund.
-			 * The marker meta (`_partial_pay_through_wallet_compleate`) is
-			 * re-read inside the lock so the first holder wins.
+			 * Shares `woo_wallet_refund_partial_<id>` with
+			 * `process_partial_payment_refund` so cancel and WC refund cannot
+			 * race. Claims `_woo_wallet_partial_payment_refunded` before the
+			 * ledger credit, and re-reads order meta via
+			 * `WOO_Wallet_Helper::get_order_for_update()` so a stale WC order
+			 * cache cannot re-admit a second credit after the first holder.
 			 */
 			$partial_payment_amount = get_order_partial_payment_amount( $order_id );
 			if ( $partial_payment_amount ) {
-				$lock_name    = 'woo_wallet_cancel_partial_' . absint( $order_id );
+				$lock_name    = 'woo_wallet_refund_partial_' . absint( $order_id );
 				$lock_timeout = (int) apply_filters( 'woo_wallet_db_lock_timeout', 5, $order_id );
 				$got_lock     = $wpdb->get_var( $wpdb->prepare( 'SELECT GET_LOCK(%s, %d)', $lock_name, $lock_timeout ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching
 
 				if ( '1' === (string) $got_lock ) {
 					try {
-						// Re-fetch the order inside the lock so the marker
-						// read reflects any concurrent delete that landed
-						// while we were waiting on the lock.
-						$locked_order = wc_get_order( $order_id );
+						$locked_order = WOO_Wallet_Helper::get_order_for_update( $order_id );
 						if ( $locked_order && $locked_order->get_meta( '_partial_pay_through_wallet_compleate' ) && ! $locked_order->get_meta( '_woo_wallet_partial_payment_refunded' ) ) {
 							// Refund only the portion not already returned by earlier partial refunds.
 							$already_refunded = (float) $locked_order->get_meta( '_woo_wallet_partial_refunded_total' );
 							$refund_gross     = max( 0.0, $partial_payment_amount - $already_refunded );
+
+							// Claim before credit — first holder wins permanently.
+							$locked_order->update_meta_data( '_woo_wallet_partial_payment_refunded', true );
+							$locked_order->update_meta_data( '_woo_wallet_partial_refunded_total', $already_refunded + $refund_gross );
+							$locked_order->delete_meta_data( '_partial_pay_through_wallet_compleate' );
+							$locked_order->save();
+
 							if ( $refund_gross > 0 ) {
 								// FX-stable: reverse the stored base amount proportionally when present.
 								$base_amount   = (float) $locked_order->get_meta( '_partial_payment_base_amount' );
@@ -855,7 +869,7 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 									$credit_currency = $locked_order->get_currency( 'edit' );
 								}
 								/* translators: Order number */
-								$this->credit(
+								$transaction_id = $this->credit(
 									$locked_order->get_customer_id(),
 									$credit_amount,
 									sprintf( __( 'Your order with ID #%s has been cancelled and hence your wallet amount has been refunded!', 'woo-wallet' ), $locked_order->get_order_number() ),
@@ -865,12 +879,14 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 										'order_id' => $order->get_order_number(),
 									)
 								);
-								/* translators: wallet amount */
-								$locked_order->add_order_note( sprintf( __( 'Wallet amount %s has been credited to customer upon cancellation', 'woo-wallet' ), wc_price( $refund_gross, woo_wallet_wc_price_args( $locked_order->get_customer_id() ) ) ) );
+								if ( $transaction_id ) {
+									/* translators: wallet amount */
+									$locked_order->add_order_note( sprintf( __( 'Wallet amount %s has been credited to customer upon cancellation', 'woo-wallet' ), wc_price( $refund_gross, woo_wallet_wc_price_args( $locked_order->get_customer_id() ) ) ) );
+								} else {
+									$locked_order->add_order_note( __( 'Wallet cancellation refund was claimed but the credit failed. Manual review required.', 'woo-wallet' ) );
+								}
+								$locked_order->save();
 							}
-							$locked_order->delete_meta_data( '_partial_pay_through_wallet_compleate' );
-							$locked_order->save();
-							WOO_Wallet_Helper::update_order_meta_data( $locked_order, '_woo_wallet_partial_payment_refunded', true );
 							$order = $locked_order;
 						}
 					} finally {
@@ -1601,10 +1617,12 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 			try {
 				// Security gate uses the raw ledger SUM only, NOT apply_filters('woo_wallet_current_balance').
 				// Third-party balance filters (credit-expiry, redeemed-totals plugins) recompute balance from
-				// columns updated by the post-commit `woo_wallet_transaction_recorded` hook — which fires AFTER
-				// our lock is released. A concurrent debit that ran the filter between RELEASE_LOCK and the
-				// async post-commit update would see an inflated balance and overdraft. The raw SUM is the
-				// only race-free source of truth — same property documented at the top of transfer().
+				// columns maintained by `woo_wallet_transaction_recorded` listeners. This method fires that
+				// hook inside the lock (below); transfer() fires it AFTER releasing its locks, so on that path
+				// a concurrent debit running the filter between RELEASE_LOCK and the listener's update would
+				// see an inflated balance and overdraft. The raw SUM is the only source of truth that is
+				// race-free on both paths — same property documented at the top of transfer(). Keep this gate
+				// on the raw SUM regardless of where the hook fires.
 				if ( 'per_currency' === $mode ) {
 					$balance = (float) $wpdb->get_var( $wpdb->prepare( "SELECT COALESCE(SUM(CASE WHEN type='credit' THEN amount ELSE -amount END), 0) FROM {$wpdb->base_prefix}woo_wallet_transactions WHERE user_id=%d AND deleted=0 AND currency=%s", $this->user_id, $stored_currency ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery,WordPress.DB.DirectDatabaseQuery.NoCaching,WordPress.DB.PreparedSQL.InterpolatedNotPrepared
 				} else {
@@ -1674,23 +1692,46 @@ if ( ! class_exists( 'Woo_Wallet_Wallet' ) ) {
 					update_user_meta( $this->user_id, $this->meta_key, $balance );
 					clear_woo_wallet_cache( $this->user_id );
 					do_action( 'woo_wallet_transaction_recorded', $transaction_id, $this->user_id, $stored_amount, $type );
-					$wallet_emails = WC()->mailer()->emails;
-					$email_admin   = isset( $wallet_emails['Woo_Wallet_Email_New_Transaction'] ) ? $wallet_emails['Woo_Wallet_Email_New_Transaction'] : null;
-					if ( ! is_null( $email_admin ) && apply_filters( 'is_enable_email_notification_for_transaction', true, $transaction_id ) ) {
-						$email_admin->trigger( $transaction_id );
-					}
-					$low_balance_email = isset( $wallet_emails['Woo_Wallet_Email_Low_Wallet_Balance'] ) ? $wallet_emails['Woo_Wallet_Email_Low_Wallet_Balance'] : null;
-					if ( ! is_null( $low_balance_email ) ) {
-						$low_balance_email->trigger( $this->user_id, $type, $stored_amount );
-					}
-					return $transaction_id;
+				} else {
+					return false;
 				}
-				return false;
 			} finally {
 				if ( ! empty( $lock_acquired ) ) {
 					$wpdb->get_var( $wpdb->prepare( 'SELECT RELEASE_LOCK(%s)', $lock_name ) ); // phpcs:ignore WordPress.DB.DirectDatabaseQuery.DirectQuery
 				}
 			}
+
+			// Emails are sent AFTER the lock is released — same shape as transfer(),
+			// which fires its post-commit work after RELEASE_LOCK. Sending inside the
+			// lock held every other wallet write for this user behind an SMTP round
+			// trip, and stretched the window in which a dying request could leave the
+			// row committed but its caller's bookkeeping unwritten.
+			//
+			// Notification failure must never mask a committed transaction: the row
+			// is already durable and the balance cache already updated, so throwing
+			// here would return false to a caller whose money HAS moved, and the
+			// linkage those callers write afterwards (transfer charge meta, order
+			// meta) would never be recorded. Log and carry on.
+			try {
+				$wallet_emails = WC()->mailer()->emails;
+				$email_admin   = isset( $wallet_emails['Woo_Wallet_Email_New_Transaction'] ) ? $wallet_emails['Woo_Wallet_Email_New_Transaction'] : null;
+				if ( ! is_null( $email_admin ) && apply_filters( 'is_enable_email_notification_for_transaction', true, $transaction_id ) ) {
+					$email_admin->trigger( $transaction_id );
+				}
+				$low_balance_email = isset( $wallet_emails['Woo_Wallet_Email_Low_Wallet_Balance'] ) ? $wallet_emails['Woo_Wallet_Email_Low_Wallet_Balance'] : null;
+				if ( ! is_null( $low_balance_email ) ) {
+					$low_balance_email->trigger( $this->user_id, $type, $stored_amount );
+				}
+			} catch ( Throwable $e ) {
+				if ( function_exists( 'wc_get_logger' ) ) {
+					wc_get_logger()->error(
+						sprintf( 'Wallet notification failed for transaction #%d: %s', $transaction_id, $e->getMessage() ),
+						array( 'source' => 'woo-wallet' )
+					);
+				}
+			}
+
+			return $transaction_id;
 		}
 	}
 

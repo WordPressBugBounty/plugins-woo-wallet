@@ -4,7 +4,7 @@ Tags: woocommerce wallet, cashback, store credit, partial payment, digital walle
 Requires PHP: 7.4
 Requires at least: 6.4
 Tested up to: 7.0
-Stable tag: 1.6.8
+Stable tag: 1.6.9
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -138,6 +138,16 @@ You can find the documentation for our [Wallet REST API here](https://github.com
 
 == Changelog ==
 
+= v1.6.9 (August 05, 2026) =
+– **Fix:-** Wallet write requests made through the REST API — creating a credit or debit from `terawallet/v1/admin/transactions`, purging a customer's transaction log, and admin-initiated transfers — failed with a critical error on every 1.6.8 site. The replay-protection service these endpoints depend on was never loaded. It is now loaded with the rest of the REST API, so no endpoint can miss it. Sites that are not integrating with the REST API are unaffected; the wallet itself, the admin screens and the customer dashboard never used this path.
+– **Fix:-** Retrying a wallet transaction whose original request timed out could report an already-completed transaction as failed, and — when the balance allowed it — could have charged the customer a second time. The `Idempotency-Key` was only recorded once a request finished, so a request that died after the money moved (for example while the transaction email was being sent) left nothing behind for the retry to recognise. The key is now claimed before the transaction is attempted: a retry that arrives while the original is still unresolved is refused with a clear "already in progress" response (HTTP 409) instead of running a second time.
+– **Fix:-** A wallet transaction is no longer reported as failed when only its notification email failed. The transaction row and the updated balance were already saved at that point, but an error from the mail server (or from a third-party mail plugin) was passed back to the caller as a failure, and any follow-up record the caller writes — such as the transfer fee note or the order link — was skipped. Mail problems are now logged and the transaction is reported correctly.
+– **Fix:-** Retrying a bulk credit or debit that was interrupted part-way through no longer records an unfinished customer as failed. A repeat of a completed bulk action now returns the original result without re-running it, and a repeat sent while the first is still running is refused as a whole with the "already in progress" response. Customers whose outcome is genuinely still unknown are now marked as such, so they are not credited a second time by hand during reconciliation.
+– **Tweak:-** Wallet transaction and low-balance notification emails are now sent after the wallet lock is released rather than while it is held, so a slow mail server no longer delays other wallet activity for the same customer.
+– **Fix:-** A locked wallet no longer produces a "Via wallet" partial-payment discount at checkout. With Partial Payment and auto-deduct enabled, a blocked balance was still treated as spendable — the order's total was reduced even though the ledger correctly refused to withdraw the funds, letting the customer be undercharged. The partial-payment fee is now withheld whenever the wallet is locked, across the classic checkout, the Blocks/Store API checkout and the AJAX opt-in.
+– **Fix:-** Partial payments placed through the Blocks (Store API) checkout could fail with "insufficient balance" even when the wallet held exactly the amount being spent. The "Via wallet" line is applied as a negative fee, and WooCommerce re-taxes negative fees when it rebuilds the order's totals — a step the Blocks checkout performs but the classic checkout does not. TeraWallet already removes that tax, but at this point in the process it could no longer recognise its own fee line, so the tax survived: a ₹94.24 wallet payment was recorded as ₹111.20 and the withdrawal was refused, leaving the order on hold. The fee is now identified correctly at every stage, so the amount withdrawn is exactly the amount shown at checkout. Stores using the "Wallet pays the tax as well" treatment are also corrected — that mode's own calculation was previously overwritten on the Blocks checkout. Classic checkout was never affected.
+– **Fix:-** Cancelling an order paid partly from the wallet could refund the wallet more than once. Repeatedly clicking Cancel from My Account (or a cancel arriving alongside a WooCommerce refund or the admin "Refund" button on the Via wallet fee) let each request credit the same amount, because the three paths did not share a lock, worked from a stale copy of the order, and only wrote the "already refunded" marker after the money had moved. All three now share one per-order lock, re-read the order inside it and claim the refund before crediting, so the wallet is credited exactly once — and the remainder only, when an earlier partial refund already returned part of it.
+
 = v1.6.8 (July 17, 2026) =
 – **Fix:-** TeraWallet admin screens were partly broken on sites running a non-English language (reported on Persian/fa_IR). WordPress builds each submenu's screen ID from the *translated* menu title, but several checks assumed the English "TeraWallet" spelling, so they never matched: on **Wallet → Users** the credit/debit, edit-balance and delete-log dialogs were never loaded — leaving those bulk actions unresponsive — the mobile bulk-action controls lost their styling, and on the Wallet Dashboard and Settings screens third-party admin notices were no longer suppressed while the Settings page lost its full-height layout. Screen IDs are now resolved from what WordPress actually registered, so every TeraWallet screen behaves identically in any language. English sites are unaffected.
 – **Fix:-** The Wallet Dashboard displayed a literal `&nbsp;` next to the currency amounts (for example `35,370,741&nbsp;تومان`) on stores whose currency position is "Left/Right with space" — the default for Persian Toman and several other currencies. The animated figures are rebuilt in the browser from WooCommerce's price format, which was passed through with its HTML entity intact. The amounts now render with a proper non-breaking space.
@@ -251,51 +261,7 @@ You can find the documentation for our [Wallet REST API here](https://github.com
 – **Tweak:-** `woo_wallet_wc_price_args()` is now mode-aware; in per-currency mode it defaults to the active provider's currency while explicit per-row currency overrides still win.
 – **Tweak:-** Database migration `1.6.0` is idempotent — fresh installs and upgrades both land on the new schema; pre-1.6 rows keep working with `original_*` NULL and `mode=0`.
 
-= v1.5.18 (April 23, 2026) =
-– **New:-** Added Go Pro admin page showcasing Pro features with a Free vs Pro comparison and license activation UI, replacing the legacy Extensions page.
-– **Security:-** Implement idempotency key for wallet transfers to prevent duplicate submissions and TOCTOU race condition vulnerabilities.
-– **Tweak:-** Enhanced partial payment tooltip to provide a clearer breakdown of amounts debited from the wallet and paid via other gateways.
-– **Tweak:-** Enhance database schema and optimize wallet transaction queries for improved performance.
-– **Tweak:-** Improved CSV exporter for wallet transactions with better query handling.
-– **Tweak:-** Update Pro upgrade URLs with UTM parameters for better tracking.
-
-= v1.5.17 (March 12, 2026) =
-– **Fix:-** Remove space in limit parameter for wallet transactions query.
-– **Fix:-** Simplify wallet transactions query preparation by removing redundant parameter checks.
-
-= v1.5.16 (February 12, 2026) =
-– **Tweak:-** Enhance SQL query construction for wallet transactions with improved safety and readability.
-– **Tweak:-** Remove return type declarations for compatibility and enhance permission checks in content handling.
-– **Tweak:-** Update version retrieval for script and style assets.
-– **Tweak:-** Enhance partial payment validation in frontend.
-– **Tweak:-** Add checks for zero currency rates in multi-currency conversion methods
-– **Tweak:-** Database Lock to serialize requests for the same user.
-– **Tweak:-** Adjust wallet transfer logic to debit before crediting, ensuring proper transaction flow.
-
-= v1.5.15 (December 10, 2025) =
-– **New:-** User wallet dashboard design.
-– **Tweak:-** Replace thickbox with wc backbone modal.
-– **Fix:-** Removed moment js and used WordPress core momentjs Library.
-– **Added:-** WordPress 6.9 support.
-
-= v1.5.14 (October 08, 2025) =
-– **Fix:-** RTL CSS issue.
-
-= v1.5.13 (August 21, 2025) =
-– **Fix:-** PHP warning.
-
-= v1.5.12 (August 21, 2025) =
-– **New:-** Date range filter in wallet transaction page.
-– **New:-** Settings panel design.
-– **New:-** Now site admin can enable/disable wallet topup.
-– **Fix:-** Partial payment issue.
-– **Fix:-** Cashback display issue on cart and checkout page.
-
-= v1.5.11 ( May 08, 2025) =
-– **Fix:-** Text Domain loading issue.
-
-= v1.5.10 ( December 12, 2024) =
-– **Fix:-** Refund issue.
+[See changelog for all versions](https://raw.githubusercontent.com/malsubrata/woo-wallet/master/changelog.txt).
 
 == Upgrade Notice ==
 
