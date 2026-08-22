@@ -46,11 +46,11 @@ if ( ! class_exists( 'Woo_Wallet_Ajax' ) ) {
 			add_action( 'wp_ajax_draw_wallet_transaction_details_table', array( $this, 'draw_wallet_transaction_details_table' ) );
 
 			// NOTE: woocommerce_order_after_calculate_totals was removed in 1.6.1 (R4).
-		// It fired on every cart calculation in admin, rewrote the cashback row amount
-		// directly via update_wallet_transaction(), bypassed the lock, and desynchronised
-		// the _current_woo_wallet_balance cache. The explicit "Recalculate cashback" order
-		// action (woocommerce_order_action_recalculate_order_cashback) now performs the
-		// same recalculation via a compensating ledger row through adjust_cashback().
+			// It fired on every cart calculation in admin, rewrote the cashback row amount
+			// directly via update_wallet_transaction(), bypassed the lock, and desynchronised
+			// the _current_woo_wallet_balance cache. The explicit "Recalculate cashback" order
+			// action (woocommerce_order_action_recalculate_order_cashback) now performs the
+			// same recalculation via a compensating ledger row through adjust_cashback().
 
 			add_action( 'wp_ajax_terawallet_export_user_search', array( $this, 'terawallet_export_user_search' ) );
 
@@ -101,6 +101,12 @@ if ( ! class_exists( 'Woo_Wallet_Ajax' ) ) {
 		 */
 		public function terawallet_do_ajax_transaction_export() {
 			check_ajax_referer( 'terawallet-exporter-script', 'security' );
+			// A nonce proves the request came from this user's session, not that the
+			// user may read other people's ledgers — this handler dumps every
+			// transaction or every balance, so it needs the capability too.
+			if ( ! current_user_can( get_wallet_user_capability() ) ) {
+				wp_die( -1 );
+			}
 			include_once WOO_WALLET_ABSPATH . 'includes/export/class-terawallet-csv-exporter.php';
 			$step = isset( $_POST['step'] ) ? absint( $_POST['step'] ) : 1;
 
@@ -305,11 +311,11 @@ if ( ! class_exists( 'Woo_Wallet_Ajax' ) ) {
 				$max_refund = wc_format_decimal( $order->get_total() - $order->get_total_refunded(), wc_get_price_decimals() );
 
 				if ( ( ! $refund_amount && ( wc_format_decimal( 0, wc_get_price_decimals() ) !== $refund_amount ) ) || $max_refund < $refund_amount || 0 > $refund_amount ) {
-					throw new Exception( __( 'Invalid refund amount', 'woocommerce' ) );
+					throw new Exception( __( 'Invalid refund amount', 'woo-wallet' ) );
 				}
 
 				if ( wc_format_decimal( $order->get_total_refunded(), wc_get_price_decimals() ) !== $refunded_amount ) {
-					throw new Exception( __( 'Error processing refund. Please try again.', 'woocommerce' ) );
+					throw new Exception( __( 'Error processing refund. Please try again.', 'woo-wallet' ) );
 				}
 
 				// Prepare line items which we are refunding.

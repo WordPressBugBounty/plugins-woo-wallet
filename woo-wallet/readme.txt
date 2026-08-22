@@ -3,8 +3,8 @@ Contributors: standalonetech, subratamal, moumitaadak
 Tags: woocommerce wallet, cashback, store credit, partial payment, digital wallet
 Requires PHP: 7.4
 Requires at least: 6.4
-Tested up to: 7.0
-Stable tag: 1.6.12
+Tested up to: 7.1
+Stable tag: 1.6.13
 License: GPLv3
 License URI: https://www.gnu.org/licenses/gpl-3.0.html
 
@@ -140,22 +140,21 @@ You can find the documentation for our [Wallet REST API here](https://github.com
 
 == Changelog ==
 
-= v1.6.12 (August 16, 2026) =
-– **Fix:-** A wallet credit or debit that did not name a user explicitly was applied to user ID 0 instead of the logged-in customer. The wallet object resolved "the current user" while WordPress was still including plugin files — before the function that answers that question exists — so it silently settled on 0 and kept that value for the whole request. It is now resolved at the moment it is needed. Only third-party code using the shorthand `credit()`/`debit()` form was affected; nothing in TeraWallet itself calls it that way, so no existing balances are wrong.
-– **Tweak:-** The "Upgrade to Pro" banner is no longer an admin notice. It was attached to the `admin_notices` hook and filtered down to TeraWallet's screens from inside the callback; it is now ordinary page content, emitted by TeraWallet's own admin pages through a new `woo_wallet_admin_page_header` action. It cannot reach the wider dashboard by any route, and third-party code can attach its own output to TeraWallet pages through the same hook.
-– **Tweak:-** The banner itself has been rewritten. On a store already carrying wallet credit it now opens with that store's own outstanding balance and the number of customers holding one, then makes the case against those figures rather than listing features in the abstract; stores with little or no wallet activity get a capability-led version instead. Withdrawals, credit expiry and the breakage reports are described by what they do for the store, the remaining four Pro features are named, and the price, the money-back guarantee and a single clear action are all present without leaving the page. It links to the in-admin Upgrade to Pro page — which carries the full comparison, the store's own numbers and the purchase FAQ — instead of sending a first click straight off-site.
-– **Tweak:-** The banner's dismiss button has been removed. Dismissal existed because a site-wide notice has to be dismissible; now that the banner appears only on this plugin's own five screens and nowhere else, there is nothing to dismiss it from. It still disappears the moment TeraWallet Pro is installed. Existing dismissals are simply forgotten — the per-user meta and the legacy site option are no longer read.
-– **Tweak:-** Pending database upgrades now run on `plugins_loaded` instead of while the plugin file is still being included. At the earlier point WordPress has not yet loaded its pluggable functions and WooCommerce may not have loaded at all, so an upgrade routine that needed either one would end the request with a fatal error. This has constrained what upgrade routines could safely do since 1.0.8; they can now use the full WordPress and WooCommerce API.
+= v1.6.13 (August 22, 2026) =
+* Security - The wallet CSV export and download now require the wallet management capability, not just a valid request token.
+* Fix - Cashback is credited again on stores that had saved the settings page. No need to re-save; the "Recalculate cashback" order action works again too.
+* Fix - The cashback type and cashback rule settings can no longer be saved as empty.
+* Fix - Wallet partial payment is no longer refused at checkout when an add-on reports a balance higher than the wallet actually holds.
+* Fix - Transaction CSV exports are now written oldest-first, so a store importing them rebuilds the ledger in the order it happened. Re-export any file you plan to import.
+* Fix - Deleted transactions are no longer included in a CSV export or its record count.
+* Fix - The order note for a failed wallet partial payment no longer blames the customer's balance when that was not the cause.
+* Tweak - Refreshed the Wallet Export screen and added an Export button to the Wallet Users screen.
+* Tweak - Confirmed compatibility with WordPress 7.1.
+* Performance - Large transaction exports are considerably faster and no longer risk timing out.
 
 [See changelog for all versions](https://raw.githubusercontent.com/malsubrata/woo-wallet/master/changelog.txt).
 
 == Upgrade Notice ==
 
-= 1.6.1 =
-Security: closes a race in the Delete Logs bulk action and prevents double-credit of cashback on duplicate order-status transitions / replayed webhooks — recommended upgrade for all sites. Two new opt-in cashback settings added: enable *Refund clawback* (Settings → Wallet Credit) to claw back cashback when orders are refunded; enable *Allow negative clawback* to permit exact reversal when the customer has already spent the credit. The `max_cashback_scope` setting defaults to `per_order` on fresh installs; upgraded sites are automatically migrated to `per_item` to preserve existing behaviour. The React Actions tab is now part of the standard settings flow and persists to a single `_wallet_settings_actions` option (legacy per-action option rows are kept as a rollback safety net). The Delete Logs bulk action now opens a modal so admins can pick delete mode (soft / hard) and balance handling (keep / wipe). Schema migration is automatic and idempotent — back up before upgrading.
-
-= 1.6.0 =
-Security: closes an overdraft window in the debit balance gate and a duplicate-IPN double-credit window in the top-up callback — recommended upgrade for all sites. Also adds multi-currency provider adapters (WOOCS, WCML, CURCY, Aelia, YayCurrency + generic fallback), fixes ledger currency bugs in partial-payment and cashback flows, and extends the REST API with per-currency fields. Schema migration is automatic and idempotent — back up before upgrading.
-
-= 1.5.18 =
-Security fix for wallet transfer race conditions, new Go Pro admin page, and database query optimizations.
+= 1.6.13 =
+Fixes cashback not crediting after saving settings, wallet partial payment being wrongly refused, and CSV exports importing in the wrong order. Re-export any CSV file you plan to import; no other action needed.
